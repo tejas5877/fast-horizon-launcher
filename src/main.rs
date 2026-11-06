@@ -19,9 +19,13 @@ use crate::ui::UI;
     about = "Lightning-fast, offline-first Rust launcher for Horizon Minecraft with automatic FastClient & Java detection."
 )]
 struct Args {
-    /// Start the Minecraft Horizon client directly
+    /// Start the Minecraft Horizon native client directly
     #[arg(short, long)]
     launch: bool,
+
+    /// Open the official Horizon Launcher GUI window with Microsoft login requirement disabled
+    #[arg(short = 'g', long = "gui")]
+    official_gui: bool,
 
     /// Run resource preparation from Minecraft files
     #[arg(short, long)]
@@ -63,9 +67,23 @@ fn main() {
     let java_detected = detect_java(config.java_home.as_deref());
     let horizon_env = HorizonEnvironment::discover(&config);
 
+    // Synchronize offline bypass into settings & accounts automatically
+    if let Some(ref horizon) = horizon_env {
+        horizon.sync_offline_bypass(&config, mc_detected.as_ref());
+    }
+
     if args.check {
         UI::banner();
         UI::print_status(&config, mc_detected.as_ref(), java_detected.as_ref(), horizon_env.as_ref());
+        return;
+    }
+
+    if args.official_gui {
+        if let (Some(java), Some(horizon)) = (java_detected.as_ref(), horizon_env.as_ref()) {
+            let _ = horizon.launch_official_gui(&config, mc_detected.as_ref(), java);
+        } else {
+            eprintln!("\x1b[31mError: JDK 25 or horizon-launcher.exe missing.\x1b[0m");
+        }
         return;
     }
 
@@ -92,7 +110,7 @@ fn main() {
     if args.launch {
         UI::banner();
         if let (Some(java), Some(horizon)) = (java_detected.as_ref(), horizon_env.as_ref()) {
-            match horizon.launch(&config, java) {
+            match horizon.launch_native(&config, java) {
                 Ok(status) => {
                     println!("Client process completed with status: {:?}", status.code());
                 }
@@ -116,37 +134,50 @@ fn interactive_loop(mut config: LauncherConfig) {
         let java_detected = detect_java(config.java_home.as_deref());
         let horizon_env = HorizonEnvironment::discover(&config);
 
+        if let Some(ref horizon) = horizon_env {
+            horizon.sync_offline_bypass(&config, mc_detected.as_ref());
+        }
+
         UI::banner();
         UI::print_status(&config, mc_detected.as_ref(), java_detected.as_ref(), horizon_env.as_ref());
 
         println!("\x1b[1mOptions:\x1b[0m");
-        println!("  \x1b[35m[1]\x1b[0m \x1b[1mLaunch Minecraft Horizon\x1b[0m");
-        println!("  \x1b[35m[2]\x1b[0m Set Player Nickname");
-        println!("  \x1b[35m[3]\x1b[0m Set Custom Minecraft Directory (e.g. FastClient)");
-        println!("  \x1b[35m[4]\x1b[0m Set Custom Java JDK Home");
-        println!("  \x1b[35m[5]\x1b[0m Run Resource Preparation");
-        println!("  \x1b[35m[6]\x1b[0m Open Horizon Data Folder");
+        println!("  \x1b[35m[1]\x1b[0m \x1b[1mLaunch Minecraft Horizon (Native Fast Start)\x1b[0m");
+        println!("  \x1b[35m[2]\x1b[0m \x1b[1mLaunch Official Horizon Launcher UI (Offline / No MS Account)\x1b[0m");
+        println!("  \x1b[35m[3]\x1b[0m Set Player Nickname");
+        println!("  \x1b[35m[4]\x1b[0m Set Custom Minecraft Directory (e.g. FastClient)");
+        println!("  \x1b[35m[5]\x1b[0m Set Custom Java JDK Home");
+        println!("  \x1b[35m[6]\x1b[0m Run Resource Preparation");
+        println!("  \x1b[35m[7]\x1b[0m Open Horizon Data Folder");
         println!("  \x1b[35m[0]\x1b[0m Exit");
 
-        let choice = UI::read_input("\nSelect an option [1-6, 0]: ");
+        let choice = UI::read_input("\nSelect an option [1-7, 0]: ");
         match choice.as_str() {
-            "1" | "" => {
+            "1" => {
                 if let (Some(java), Some(horizon)) = (java_detected.as_ref(), horizon_env.as_ref()) {
                     println!("\n\x1b[32mStarting game...\x1b[0m");
-                    let _ = horizon.launch(&config, java);
+                    let _ = horizon.launch_native(&config, java);
                 } else {
                     println!("\n\x1b[31mMissing requirements: Ensure JDK 25 and horizon-launcher.exe are present.\x1b[0m");
                     let _ = UI::read_input("Press Enter to continue...");
                 }
             }
-            "2" => {
+            "2" | "" => {
+                if let (Some(java), Some(horizon)) = (java_detected.as_ref(), horizon_env.as_ref()) {
+                    let _ = horizon.launch_official_gui(&config, mc_detected.as_ref(), java);
+                } else {
+                    println!("\n\x1b[31mMissing requirements: Ensure JDK 25 and horizon-launcher.exe are present.\x1b[0m");
+                    let _ = UI::read_input("Press Enter to continue...");
+                }
+            }
+            "3" => {
                 let name = UI::read_input("\nEnter new player nickname: ");
                 if !name.is_empty() {
                     let _ = config.set_player_name(&name);
                     println!("\x1b[32mPlayer name updated to: {}\x1b[0m", name);
                 }
             }
-            "3" => {
+            "4" => {
                 let dir_str = UI::read_input("\nEnter full Minecraft path (leave blank to auto-detect): ");
                 if dir_str.is_empty() {
                     let _ = config.set_minecraft_dir::<PathBuf>(None);
@@ -162,7 +193,7 @@ fn interactive_loop(mut config: LauncherConfig) {
                     }
                 }
             }
-            "4" => {
+            "5" => {
                 let java_str = UI::read_input("\nEnter full JDK home path (leave blank to auto-detect): ");
                 if java_str.is_empty() {
                     let _ = config.set_java_home::<PathBuf>(None);
@@ -178,7 +209,7 @@ fn interactive_loop(mut config: LauncherConfig) {
                     }
                 }
             }
-            "5" => {
+            "6" => {
                 if let (Some(mc), Some(java), Some(horizon)) = (mc_detected.as_ref(), java_detected.as_ref(), horizon_env.as_ref()) {
                     let _ = horizon.prepare_resources(mc, java);
                     let _ = UI::read_input("\nPress Enter to continue...");
@@ -187,7 +218,7 @@ fn interactive_loop(mut config: LauncherConfig) {
                     let _ = UI::read_input("Press Enter to continue...");
                 }
             }
-            "6" => {
+            "7" => {
                 if let Some(horizon) = horizon_env.as_ref() {
                     let _ = std::process::Command::new("explorer")
                         .arg(&horizon.data_dir)

@@ -1,7 +1,8 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use serde_json::{json, Value};
 
 use crate::config::LauncherConfig;
 use crate::detector::{DetectedJava, DetectedMinecraft};
@@ -18,20 +19,21 @@ impl HorizonEnvironment {
         let exe_dir = env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| PathBuf::from("."));
 
-        // Search for horizon-launcher.exe in:
-        // 1. Current directory
-        // 2. bin/
-        // 3. Downloads / Horizon-Offline-0.8.0 folder if running nearby
         let candidates = [
             exe_dir.join("horizon-launcher.exe"),
             exe_dir.join("bin").join("horizon-launcher.exe"),
+            PathBuf::from(r"C:\Users\niraj\Downloads\horizon-launcher-windows-x64\horizon-launcher.exe"),
             PathBuf::from(r"C:\Users\niraj\Downloads\Horizon-Offline-0.8.0\horizon-launcher.exe"),
         ];
 
         let launcher_exe = candidates.into_iter().find(|p| p.is_file())?;
 
         let data_dir = config.horizon_data_dir.clone().unwrap_or_else(|| {
-            exe_dir.join("Horizon Offline Data")
+            if let Ok(appdata) = env::var("APPDATA") {
+                PathBuf::from(appdata).join("horizon-launcher")
+            } else {
+                exe_dir.join("Horizon Offline Data")
+            }
         });
         let game_home = data_dir.join("game");
 
@@ -40,6 +42,54 @@ impl HorizonEnvironment {
             data_dir,
             game_home,
         })
+    }
+
+    /// Automatically sets dev_offline=true and configures offline player in settings.json & accounts.json
+    pub fn sync_offline_bypass(&self, config: &LauncherConfig, mc: Option<&DetectedMinecraft>) {
+        let appdata_dir = env::var("APPDATA")
+            .ok()
+            .map(|a| PathBuf::from(a).join("horizon-launcher"));
+
+        let target_dirs: Vec<PathBuf> = [Some(self.data_dir.clone()), appdata_dir]
+            .into_iter()
+            .flatten()
+            .collect();
+
+        let mc_path_str = mc.map(|m| m.path.to_string_lossy().into_owned());
+
+        for dir in target_dirs {
+            let _ = fs::create_dir_all(&dir);
+
+            // 1. Update settings.json with dev_offline = true
+            let settings_file = dir.join("settings.json");
+            let mut settings: Value = fs::read_to_string(&settings_file)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_else(|| json!({}));
+
+            if let Some(obj) = settings.as_object_mut() {
+                obj.insert("dev_offline".to_string(), json!(true));
+                obj.insert("selected".to_string(), json!("nightly-2026-11-05-66f3981"));
+                if let Some(ref p) = mc_path_str {
+                    obj.insert("minecraft_dir".to_string(), json!(p));
+                }
+            }
+            if let Ok(pretty) = serde_json::to_string_pretty(&settings) {
+                let _ = fs::write(settings_file, pretty);
+            }
+
+            // 2. Update accounts.json with offline player name
+            let accounts_file = dir.join("accounts.json");
+            let accounts_json = json!({
+                "accounts": [],
+                "selected": null,
+                "offline": [config.player_name],
+                "offline_selected": config.player_name
+            });
+            if let Ok(pretty) = serde_json::to_string_pretty(&accounts_json) {
+                let _ = fs::write(accounts_file, pretty);
+            }
+        }
     }
 
     pub fn is_client_installed(&self) -> bool {
@@ -73,7 +123,8 @@ impl HorizonEnvironment {
         if let Ok(entries) = fs::read_dir(versions_dir) {
             for entry in entries.flatten() {
                 let resources = entry.path().join(".local").join("horizon-client").join("26.3");
-                if resources.join("resource-manifest.json").is_file() 
+                if resources.join("horizon-resources.json").is_file() 
+                    || resources.join("resource-manifest.json").is_file()
                     || resources.join("registries.json").is_file() {
                     return true;
                 }
@@ -104,7 +155,22 @@ impl HorizonEnvironment {
         cmd.status()
     }
 
-    pub fn launch(
+    /// Launch the official Horizon GUI window with Microsoft account requirement completely disabled
+    pub fn launch_official_gui(
+        &self,
+        config: &LauncherConfig,
+        mc: Option<&DetectedMinecraft>,
+        java: &DetectedJava,
+    ) -> std::io::Result<ExitStatus> {
+        self.sync_offline_bypass(config, mc);
+
+        println!("\x1b[32mLaunching official Horizon Launcher (Offline Mode Enabled)...\x1b[0m");
+        let mut cmd = Command::new(&self.launcher_exe);
+        self.apply_environment(&mut cmd, java);
+        cmd.status()
+    }
+
+    pub fn launch_native(
         &self,
         config: &LauncherConfig,
         java: &DetectedJava,
@@ -123,8 +189,8 @@ impl HorizonEnvironment {
             self.apply_environment(&mut cmd, java);
             cmd.status()
         } else {
-            // Fallback to official launcher play
-            println!("Starting Horizon through launcher launcher...");
+            // Fallback to official launcher play with offline bypass
+            println!("Starting Horizon native client via launcher backend...");
             let mut cmd = Command::new(&self.launcher_exe);
             cmd.arg("play");
 
