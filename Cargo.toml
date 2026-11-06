@@ -6,7 +6,7 @@ authors = ["AN0N"]
 description = "A fast, offline-first Rust launcher for Horizon Minecraft with automatic FastClient, TLauncher, and JDK auto-detection."
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/AN0N/fast-horizon-launcher"
+repository = "https://github.com/tejas5877/fast-horizon-launcher"
 keywords = ["minecraft", "horizon", "rust", "launcher", "fastclient"]
 categories = ["games", "command-line-utilities"]
 

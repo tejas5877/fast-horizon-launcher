@@ -69,7 +69,7 @@ fast-horizon-launcher --minecraft "D:\Games\.minecraft" --java "C:\Program Files
 Make sure you have Rust 1.80+ installed:
 
 ```bash
-git clone https://github.com/AN0N/fast-horizon-launcher.git
+git clone https://github.com/tejas5877/fast-horizon-launcher.git
 cd fast-horizon-launcher
 cargo build --release
 ```
